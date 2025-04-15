@@ -22,6 +22,7 @@ export default function ArticleEditor() {
   const [showAddLinksDropdown, setShowAddLinksDropdown] = useState(false)
   const [rewriteType, setRewriteType] = useState<string>("")
   const [isProcessing, setIsProcessing] = useState(false)
+  const [selectionRange, setSelectionRange] = useState<{ from: number; to: number } | null>(null)
   const selectionTimeoutRef = useRef<NodeJS.Timeout | null>(null)
   const editorContainerRef = useRef<HTMLDivElement>(null)
 
@@ -52,6 +53,10 @@ export default function ArticleEditor() {
 
       const { from, to } = editor.state.selection
       if (from !== to) {
+        // Store the original selection range
+        setSelectionRange({ from, to })
+
+        // Get the selected text
         const text = editor.state.doc.textBetween(from, to, " ")
         setSelectedText(text)
 
@@ -112,6 +117,7 @@ export default function ArticleEditor() {
         selectionTimeoutRef.current = setTimeout(() => {
           setShowSelectionMenu(false)
           setShowRewriteOptions(false)
+          setSelectionRange(null)
           // Don't hide the dropdowns here as they need to stay visible while processing
         }, 200)
       }
@@ -141,43 +147,129 @@ export default function ArticleEditor() {
     setRewriteType(type)
     setShowRewriteOptions(false)
     setShowSelectionMenu(false)
+
+    // Expand selection to include complete words before showing the dropdown
+    if (editor && selectionRange) {
+      expandSelectionToCompleteWords()
+    }
+
     setShowRewriteDropdown(true)
   }
 
-  const handleRewriteComplete = (newText: string) => {
-    if (editor) {
-      const { from, to } = editor.state.selection
-      editor.commands.deleteRange({ from, to })
-      editor.commands.insertContent(newText)
+  // Function to expand selection to include complete words
+  const expandSelectionToCompleteWords = () => {
+    if (!editor || !selectionRange) return
+
+    const { from, to } = selectionRange
+    const doc = editor.state.doc
+
+    // Get the text around the selection to check for word boundaries
+    const textBefore = doc.textBetween(Math.max(0, from - 20), from, " ")
+    const textAfter = doc.textBetween(to, Math.min(doc.content.size, to + 20), " ")
+
+    // Find the nearest word boundary before the selection
+    let expandedFrom = from
+    let i = textBefore.length - 1
+
+    // If selection starts in the middle of a word, move back to the beginning of the word
+    if (i >= 0 && /\w/.test(textBefore[i])) {
+      while (i >= 0 && /\w/.test(textBefore[i])) {
+        i--
+      }
+      // Adjust the from position
+      expandedFrom = from - (textBefore.length - i - 1)
     }
+
+    // Find the nearest word boundary after the selection
+    let expandedTo = to
+    i = 0
+
+    // If selection ends in the middle of a word, move forward to the end of the word
+    if (i < textAfter.length && /\w/.test(textAfter[i])) {
+      while (i < textAfter.length && /\w/.test(textAfter[i])) {
+        i++
+      }
+      // Adjust the to position
+      expandedTo = to + i
+    }
+
+    // Update the selection if it changed
+    if (expandedFrom !== from || expandedTo !== to) {
+      editor.commands.setTextSelection({ from: expandedFrom, to: expandedTo })
+
+      // Update the selected text
+      const expandedText = doc.textBetween(expandedFrom, expandedTo, " ")
+      setSelectedText(expandedText)
+
+      // Update the selection range
+      setSelectionRange({ from: expandedFrom, to: expandedTo })
+    }
+  }
+
+  const handleRewriteComplete = (newText: string) => {
+    if (editor && selectionRange) {
+      try {
+        // Store the selection range locally to ensure it doesn't change during the operation
+        const { from, to } = selectionRange
+
+        // First, ensure we have the editor's focus
+        editor.commands.focus()
+
+        // Set the selection to the stored range
+        editor.commands.setTextSelection({ from, to })
+
+        // Use a transaction to ensure the operation is atomic
+        editor.view.dispatch(editor.view.state.tr.deleteRange(from, to).insertText(newText, from))
+
+        // Clear the selection range after successful replacement
+        setSelectionRange(null)
+      } catch (error) {
+        console.error("Error replacing text:", error)
+      }
+    }
+
+    // Close the dropdown regardless of success or failure
     setShowRewriteDropdown(false)
   }
 
   const handleAddLink = (anchorText: string, url: string) => {
-    if (editor) {
-      const { from, to } = editor.state.selection
+    if (editor && selectionRange) {
+      try {
+        const { from, to } = selectionRange
 
-      // Find the portion of the selected text that matches the anchor text
-      const selectedText = editor.state.doc.textBetween(from, to, " ")
-      const anchorIndex = selectedText.indexOf(anchorText)
+        // First, ensure we have the editor's focus
+        editor.commands.focus()
 
-      if (anchorIndex >= 0) {
-        // If the anchor text is found within the selection, only link that part
-        const anchorStart = from + anchorIndex
-        const anchorEnd = anchorStart + anchorText.length
+        // Set the selection to the stored range
+        editor.commands.setTextSelection({ from, to })
 
-        editor.chain().focus().setTextSelection({ from: anchorStart, to: anchorEnd }).setLink({ href: url }).run()
-      } else {
-        // If the anchor text doesn't match, just link the whole selection
-        editor.chain().focus().setLink({ href: url }).run()
+        const selectedText = editor.state.doc.textBetween(from, to, " ")
+        const anchorIndex = selectedText.indexOf(anchorText)
+
+        if (anchorIndex >= 0) {
+          // If the anchor text is found within the selection, only link that part
+          const anchorStart = from + anchorIndex
+          const anchorEnd = anchorStart + anchorText.length
+
+          editor.chain().focus().setTextSelection({ from: anchorStart, to: anchorEnd }).setLink({ href: url }).run()
+        } else {
+          // If the anchor text doesn't match, just link the whole selection
+          editor.chain().focus().setLink({ href: url }).run()
+        }
+      } catch (error) {
+        console.error("Error adding link:", error)
       }
     }
+
+    // Close the dropdown and clear selection regardless of success or failure
     setShowAddLinksDropdown(false)
+    setSelectionRange(null)
   }
 
   const handleCloseDropdowns = () => {
     setShowRewriteDropdown(false)
     setShowAddLinksDropdown(false)
+    setSelectionRange(null)
   }
 
   return (
